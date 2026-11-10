@@ -1,0 +1,11 @@
+name: rich-paste
+version: "0.2.0"
+description: >-
+  Rich paste for Hermes Desktop: web HTML becomes Markdown with headings, links
+  and images; pasted and downloaded images are sent to the model at the place
+  they appear in your text instead of all at the end.
+author: 郎振宁
+license: MIT
+requires_hermes: ">=0.23.0"
+provides_middleware:
+  - llm_request

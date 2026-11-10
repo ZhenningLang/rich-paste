@@ -1,0 +1,75 @@
+<meta charset="utf-8"><!-- source: https://go.dev/blog/pgo (section copied 2026-11-06) -->
+<h2 id="example">Example</h2>
+<p>Let’s build a service that converts Markdown to HTML: users upload Markdown source to <code>/render</code>, which returns the HTML conversion.
+We can use <a href="https://pkg.go.dev/gitlab.com/golang-commonmark/markdown" rel="noreferrer" target="_blank"><code>gitlab.com/golang-commonmark/markdown</code></a> to implement this easily.</p>
+<h3 id="set-up">Set up</h3>
+<pre><code>$ go mod init example.com/markdown
+$ go get gitlab.com/golang-commonmark/markdown@bf3e522c626a
+</code></pre>
+<p>In <code>main.go</code>:</p>
+<pre><code class="language-go">package main
+
+import (
+    &quot;bytes&quot;
+    &quot;io&quot;
+    &quot;log&quot;
+    &quot;net/http&quot;
+    _ &quot;net/http/pprof&quot;
+
+    &quot;gitlab.com/golang-commonmark/markdown&quot;
+)
+
+func render(w http.ResponseWriter, r *http.Request) {
+    if r.Method != &quot;POST&quot; {
+        http.Error(w, &quot;Only POST allowed&quot;, http.StatusMethodNotAllowed)
+        return
+    }
+
+    src, err := io.ReadAll(r.Body)
+    if err != nil {
+        log.Printf(&quot;error reading body: %v&quot;, err)
+        http.Error(w, &quot;Internal Server Error&quot;, http.StatusInternalServerError)
+        return
+    }
+
+    md := markdown.New(
+        markdown.XHTMLOutput(true),
+        markdown.Typographer(true),
+        markdown.Linkify(true),
+        markdown.Tables(true),
+    )
+
+    var buf bytes.Buffer
+    if err := md.Render(&amp;buf, src); err != nil {
+        log.Printf(&quot;error converting markdown: %v&quot;, err)
+        http.Error(w, &quot;Malformed markdown&quot;, http.StatusBadRequest)
+        return
+    }
+
+    if _, err := io.Copy(w, &amp;buf); err != nil {
+        log.Printf(&quot;error writing response: %v&quot;, err)
+        http.Error(w, &quot;Internal Server Error&quot;, http.StatusInternalServerError)
+        return
+    }
+}
+
+func main() {
+    http.HandleFunc(&quot;/render&quot;, render)
+    log.Printf(&quot;Serving on port 8080...&quot;)
+    log.Fatal(http.ListenAndServe(&quot;:8080&quot;, nil))
+}
+</code></pre>
+<p>Build and run the server:</p>
+<pre><code>$ go build -o markdown.nopgo.exe
+$ ./markdown.nopgo.exe
+2023/08/23 03:55:51 Serving on port 8080...
+</code></pre>
+<p>Let’s try sending some Markdown from another terminal.
+We can use the <code>README.md</code> from the Go project as a sample document:</p>
+<pre><code>$ curl -o README.md -L &quot;https://raw.githubusercontent.com/golang/go/c16c2c49e2fa98ae551fc6335215fadd62d33542/README.md&quot;
+$ curl --data-binary @README.md http://localhost:8080/render
+&lt;h1&gt;The Go Programming Language&lt;/h1&gt;
+&lt;p&gt;Go is an open source programming language that makes it easy to build simple,
+reliable, and efficient software.&lt;/p&gt;
+...
+</code></pre>

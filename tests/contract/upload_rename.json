@@ -1,0 +1,48 @@
+{
+  "about": "Shared contract (review S1): Node checks the composer middleware turns `input` into `expected`; Python takes `expected.text`, lets the host copy every image to a new path, and checks interleave still places each image after its marker.",
+  "input": {
+    "text": "alpha 今天的情况：\n![截图 1](attached:1)![截图 2](attached:2)\nbravo 昨天已经下线了，不用管。\ndelta 这台最可疑：\n![网页图](/Users/me/.hermes/cache/rich-paste/rich-paste-cache/20261106/0123456789ab.png)\n问题：每台机器的 CPU 读数？",
+    "attachments": [
+      {
+        "id": "s1",
+        "kind": "image",
+        "label": "截图1.png",
+        "path": "/tmp/hermes-paste/screenshot-1.png"
+      },
+      {
+        "id": "s2",
+        "kind": "image",
+        "label": "截图2.png",
+        "path": "/tmp/hermes-paste/screenshot-2.png"
+      }
+    ]
+  },
+  "expected": {
+    "text": "alpha 今天的情况：\n⁣[截图 1]⁣⁣[截图 2]⁣\nbravo 昨天已经下线了，不用管。\ndelta 这台最可疑：\n⁣[图：网页图]⁣\n问题：每台机器的 CPU 读数？⁣󠀳⁣",
+    "attachments": [
+      {
+        "id": "s1",
+        "kind": "image",
+        "label": "截图1.png",
+        "path": "/tmp/hermes-paste/screenshot-1.png"
+      },
+      {
+        "id": "s2",
+        "kind": "image",
+        "label": "截图2.png",
+        "path": "/tmp/hermes-paste/screenshot-2.png"
+      },
+      {
+        "id": "rich-paste:/Users/me/.hermes/cache/rich-paste/rich-paste-cache/20261106/0123456789ab.png",
+        "kind": "image",
+        "label": "0123456789ab.png",
+        "path": "/Users/me/.hermes/cache/rich-paste/rich-paste-cache/20261106/0123456789ab.png"
+      }
+    ]
+  },
+  "uploaded_paths": [
+    "/Users/me/.hermes/cache/images/dashboard_20261106_aa11_screenshot-1.png",
+    "/Users/me/.hermes/cache/images/dashboard_20261106_bb22_screenshot-2.png",
+    "/Users/me/.hermes/cache/images/dashboard_20261106_cc33_0123456789ab.png"
+  ]
+}

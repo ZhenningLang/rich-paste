@@ -1,0 +1,93 @@
+<meta charset="utf-8"><!-- source: https://github.com/mixmark-io/turndown (section copied 2026-11-06) -->
+<h2 tabindex="-1" class="heading-element" dir="auto">Options</h2><a id="user-content-options" class="anchor" aria-label="Permalink: Options" href="#options"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Options can be passed in to the constructor on instantiation. For example:</p>
+<div class="highlight highlight-source-js notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="var turndownService = new TurndownService({ option: 'value' })"><pre><span class="pl-k">var</span> <span class="pl-s1">turndownService</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">TurndownService</span><span class="pl-kos">(</span><span class="pl-kos">{</span> <span class="pl-c1">option</span>: <span class="pl-s">'value'</span> <span class="pl-kos">}</span><span class="pl-kos">)</span></pre></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th align="left">Option</th>
+<th align="left">Valid values</th>
+<th align="left">Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left"><code>headingStyle</code></td>
+<td align="left"><code>setext</code> or <code>atx</code></td>
+<td align="left"><code>setext</code></td>
+</tr>
+<tr>
+<td align="left"><code>hr</code></td>
+<td align="left">Any <a href="http://spec.commonmark.org/0.27/#thematic-breaks" rel="nofollow">Thematic break</a></td>
+<td align="left"><code>* * *</code></td>
+</tr>
+<tr>
+<td align="left"><code>bulletListMarker</code></td>
+<td align="left"><code>-</code>, <code>+</code>, or <code>*</code></td>
+<td align="left"><code>*</code></td>
+</tr>
+<tr>
+<td align="left"><code>codeBlockStyle</code></td>
+<td align="left"><code>indented</code> or <code>fenced</code></td>
+<td align="left"><code>indented</code></td>
+</tr>
+<tr>
+<td align="left"><code>fence</code></td>
+<td align="left"><code>```</code> or <code>~~~</code></td>
+<td align="left"><code>```</code></td>
+</tr>
+<tr>
+<td align="left"><code>emDelimiter</code></td>
+<td align="left"><code>_</code> or <code>*</code></td>
+<td align="left"><code>_</code></td>
+</tr>
+<tr>
+<td align="left"><code>strongDelimiter</code></td>
+<td align="left"><code>**</code> or <code>__</code></td>
+<td align="left"><code>**</code></td>
+</tr>
+<tr>
+<td align="left"><code>linkStyle</code></td>
+<td align="left"><code>inlined</code> or <code>referenced</code></td>
+<td align="left"><code>inlined</code></td>
+</tr>
+<tr>
+<td align="left"><code>linkReferenceStyle</code></td>
+<td align="left"><code>full</code>, <code>collapsed</code>, or <code>shortcut</code></td>
+<td align="left"><code>full</code></td>
+</tr>
+<tr>
+<td align="left"><code>preformattedCode</code></td>
+<td align="left"><code>false</code> or <a href="https://github.com/lucthev/collapse-whitespace/issues/16" data-hovercard-type="issue" data-hovercard-url="/lucthev/collapse-whitespace/issues/16/hovercard"><code>true</code></a></td>
+<td align="left"><code>false</code></td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<div class="markdown-heading" dir="auto"><h3 tabindex="-1" class="heading-element" dir="auto">Advanced Options</h3><a id="user-content-advanced-options" class="anchor" aria-label="Permalink: Advanced Options" href="#advanced-options"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th align="left">Option</th>
+<th align="left">Valid values</th>
+<th align="left">Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left"><code>blankReplacement</code></td>
+<td align="left">rule replacement function</td>
+<td align="left">See <strong>Special Rules</strong> below</td>
+</tr>
+<tr>
+<td align="left"><code>keepReplacement</code></td>
+<td align="left">rule replacement function</td>
+<td align="left">See <strong>Special Rules</strong> below</td>
+</tr>
+<tr>
+<td align="left"><code>defaultReplacement</code></td>
+<td align="left">rule replacement function</td>
+<td align="left">See <strong>Special Rules</strong> below</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<div class="markdown-heading" dir="auto">
