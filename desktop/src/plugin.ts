@@ -5,17 +5,16 @@
 // clicks 「转为 Markdown」, or by itself when the paste decision says so (smart mode,
 // dogfood 11-07: pictures inside text, tables, structured documents; always 撤销-able).
 
-import { atom, Button, COMPOSER_AREAS, Tip, writeClipboardText, Dialog, DialogContent, DialogTitle, host, Input, ListRow, MessageTextContent, SETTINGS_PLUGINS_AREA, ToggleRow, useValue } from '@hermes/plugin-sdk'
+import { atom, Button, COMPOSER_AREAS, Tip, Dialog, DialogContent, DialogTitle, host, Input, ListRow, MessageTextContent, SETTINGS_PLUGINS_AREA, ToggleRow, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 import { bindI18n, t } from './i18n.ts'
-import { attachPlayback, positionStore, watchMedia } from './media.ts'
 import { convertHtml, describeSummary, fillImages, isTooLarge, missedImageLabel, pasteDecision, pasteShape, smallImages, type SkipReason } from './convert.ts'
 import {
   applyDraftMarkers, AUDIO_EXT_RE, basename, hasChip, chipsToMarkers, insertAfterChip, CONVERTIBLE_EXT_RE, countScreenshots, isImageFile, isPluginCachePath, localImageMarkers,
-  locatePasted, refChip, removeMarkers, replaceNth, replaceRange, screenshotChip, VIDEO_EXT_RE, type Draft, type DraftAttachment, type PendingRef,
-  hasRefChips, linkFor, looksLikeMarkdown, markerFor, screenshotChipNumbers, screenshotNumber, type ShotTarget
+  locatePasted, refChip, removeMarkers, replaceRange, screenshotChip, VIDEO_EXT_RE, type Draft, type DraftAttachment, type PendingRef,
+  hasRefChips, linkFor, looksLikeMarkdown, markerFor, screenshotChipNumbers, type ShotTarget
 } from './markers.ts'
 import {
   DEFAULTS, fetchParams, normalizeSettings, readSettings, STT_MODELS, type NumberKey, type RichPasteSettings, type StorageLike
@@ -72,7 +71,7 @@ async function inPool<T>(items: T[], limit: number, task: (item: T, index: numbe
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
 }
 /** Must equal dashboard/plugin_api.py API_VERSION (tests/desktop/sdk-surface checks). */
-export const BACKEND_API = 11
+export const BACKEND_API = 12
 /** Images downloaded on their own per paste, whatever the setting (rp_cache.MAX_IMAGES_PER_REQUEST). */
 export const MAX_IMAGES_PER_PASTE = 50
 const is404 = (err: unknown) => /^404\b/.test(String((err as { message?: unknown })?.message ?? err))
@@ -131,11 +130,6 @@ interface Ctx {
   i18n?: Parameters<typeof bindI18n>[0]
 }
 
-/** Ref chips whose click the plugin handles (D9); session and url chips belong to Desktop. */
-const CHIP_CURSOR_CSS = ['image', 'file', 'folder']
-  .map(kind => `[role="textbox"] [data-ref-kind="${kind}"][data-ref-text]`)
-  .join(',\n') + ' { cursor: pointer; }'
-
 /** Busy rows end in dots cycling . → .. → ... (dogfood 11-07); a static … read as stuck.
  *  Fixed width so the text does not jump; reduced motion shows a still "...". */
 const BUSY_DOTS_CSS = `
@@ -161,22 +155,11 @@ const PREVIEW_CSS = `
 .rp-preview { overflow-x: hidden; overflow-wrap: anywhere; }
 .rp-preview * { max-width: 100%; min-width: 0; box-sizing: border-box; }
 .rp-preview img, .rp-preview video { height: auto; }
-/* Desktop places a message image inside a fixed frame and zeroes the image's margin only inside an
-   assistant message. In the preview Typography's 2em image margin stayed, pushing the image out of its
-   frame: first onto the next paragraph, then (as a blank line) above it (dogfood 11-09). */
-.rp-preview [data-slot="aui_markdown-image"] img { margin: 0 !important; }
-/* A first-shown image gets a 4:3 frame that does not resize when it loads (no layout shift in the chat),
-   so a wider image left a blank band under it (dogfood 11-10). The preview frame hugs the image instead. */
-.rp-preview [data-slot="aui_markdown-image"] { aspect-ratio: auto !important; }
-.rp-preview [data-slot="aui_zoomable-image"] { position: relative !important; height: auto !important; }
-.rp-preview [data-slot="aui_markdown-image"] img { max-height: var(--image-preview-height) !important; }
-/* The image's hover download button has no use in a read-only preview. */
-.rp-preview [data-slot="aui_zoomable-image"] > button + button { display: none !important; }
 .rp-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .rp-preview table { display: block; overflow-x: auto; }
 .rp-preview a, .rp-preview code { overflow-wrap: anywhere; word-break: break-word; }
 `
-const PLUGIN_CSS = CHIP_CURSOR_CSS + '\n' + BUSY_DOTS_CSS + '\n' + PREVIEW_CSS
+const PLUGIN_CSS = BUSY_DOTS_CSS + '\n' + PREVIEW_CSS
 
 /** 「正在…」 followed by the animated dots. */
 const busyText = (text: string, after = '') =>
@@ -194,7 +177,6 @@ const CONVERT_MODE_HELP = { smart: 'modeSmartHelp', always: 'modeAlwaysHelp', ne
 const STT_MODEL_LABEL = { '': 'sttFollow', base: 'sttFast', small: 'sttBetter', turbo: 'sttBest' } as const
 const STT_MODEL_HELP = { '': 'sttFollowHelp', base: 'sttBaseHelp', small: 'sttSmallHelp', turbo: 'sttTurboHelp' } as const
 
-const isPlayable = (path: string) => AUDIO_EXT_RE.test(path) || VIDEO_EXT_RE.test(path)
 
 /** Desktop keeps warnings until closed. The plugin's warnings only report what already happened
  *  (an image kept as a link, a chat switched), so they leave by themselves; errors still stay. */
@@ -235,20 +217,6 @@ function finderPaths(data: DataTransfer): string[] {
 
 function isComposerTarget(target: EventTarget | null): boolean {
   return !!target && (target as HTMLElement).isContentEditable === true
-}
-
-/**
- * Type `text` at the caret of `editor` with the browser's own editing command,
- * the same path as the user typing (A:S3). The SDK's insertText only appends.
- * False when the editor lost focus or the command is unavailable.
- */
-function insertAtCaret(editor: Element | null, text: string): boolean {
-  if (!editor || document.activeElement !== editor) return false
-  try {
-    return document.execCommand('insertText', false, text)
-  } catch {
-    return false
-  }
 }
 
 /** Plain text of copied composer HTML with every chip written as its `data-ref-text`. */
@@ -310,27 +278,16 @@ export default {
     }
     /** Finder/Raycast paths read for a paste, shown as chips until send (D5/D6). */
     const pendingRefs: PendingRef[] = []
-    /** «截图 N» → a preview copy in the cache, saved at paste time (D9; lost on plugin reload). */
-    const screenshotPreviews = new Map<string, string>()
     /** «截图 N» → SHA-256 of the pasted bytes (11-07), matched against the attachment files at send. */
     const screenshotDigests = new Map<string, string>()
     /** Screenshot numbers restart in every chat and after every send (review 11-08): key by chat too,
      *  and forget a chat's numbers once its message has gone. */
     const shotKey = (address: string, n: number) => `${address}\u0000${n}`
     const forgetShots = (address: string) => {
-      for (const map of [screenshotPreviews, screenshotDigests]) {
+      for (const map of [screenshotDigests]) {
         for (const key of [...map.keys()]) if (key.startsWith(`${address}\u0000`)) map.delete(key)
       }
     }
-    interface Preview {
-      path: string
-      title: string
-      replace?: { refText: string; occurrence: number; kind: 'image' | 'file' }
-      /** The chip's reference, shown as a label that copies it (11-07): paste it anywhere in the text. */
-      copyRef?: { text: string; label: string }
-    }
-    const preview = atom<Preview | null>(null)
-    const positions = positionStore(ctx.storage)
     /** 预览 (dogfood 11-07): the draft text it shows, or null when closed. */
     const split = atom<string | null>(null)
     /** Audio pasted as file chips, offered for transcription (D10). */
@@ -864,66 +821,6 @@ export default {
       }
     }
 
-    /** Swap one chip (the `occurrence`-th with this ref text) for another in the draft. */
-    const replaceChip = async (refText: string, occurrence: number, next: string, ref: PendingRef) => {
-      const sessionId = pinnedAddress()
-      const draft = await readDraft(sessionId)
-      const text = replaceNth(draft, refText, occurrence, next)
-      if (text === null) {
-        notify('warning', t('blockGone'))
-        return
-      }
-      if (!pendingRefs.some(r => r.path === ref.path && r.kind === ref.kind)) pendingRefs.push(ref)
-      await host.composer.setDraft(sessionId, text)
-      void refreshDraft()
-    }
-
-    const pickReplacement = async (kind: 'file' | 'folder' | 'image', current: string, refText: string, occurrence: number) => {
-      if (kind === 'folder') {
-        const res = await ctx.files?.requestFolder?.()
-        const path = res?.ok ? res.folder?.path : null
-        if (path) await replaceChip(refText, occurrence, refChip('folder', path), { path, kind: 'folder' })
-        return
-      }
-      const dir = current.replace(/[\\/][^\\/]*$/, '') || undefined
-      const path = await ctx.os.pickOpenPath?.({ defaultPath: dir, title: kind === 'image' ? t('pickImage') : t('pickFile') })
-      if (!path) return
-      const nextKind = isImageFile(path) ? 'image' : 'file'
-      await replaceChip(refText, occurrence, refChip(nextKind, path), { path, kind: nextKind })
-    }
-
-    /** Click on a Desktop ref chip in the composer (D9): images/audio/video preview, files and
-     *  folders open a picker that replaces the chip. Desktop itself does nothing on chip clicks. */
-    const onChipClick = (event: Event) => {
-      const target = event.target as (Element & { closest?: (s: string) => Element | null }) | null
-      const chip = target?.closest?.('[data-ref-kind][data-ref-text]')
-      const editor = chip?.closest?.('[role="textbox"]')
-      if (!chip || !editor) return
-      const kind = chip.getAttribute('data-ref-kind')
-      const refText = chip.getAttribute('data-ref-text') || ''
-      const value = chip.getAttribute('data-ref-id') || ''
-      const same = Array.from(editor.querySelectorAll('[data-ref-text]')).filter(c => c.getAttribute('data-ref-text') === refText)
-      const occurrence = Math.max(0, same.indexOf(chip))
-      const shot = kind === 'image' ? screenshotNumber(value) : null
-      if (shot !== null) {
-        const path = screenshotPreviews.get(shotKey(pinnedAddress(), shot))
-        if (path) preview.set({ path, title: value, copyRef: { text: refText, label: value } })
-        else notify('info', t('shotNoPreview'))
-        return
-      }
-      if (!value.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(value)) return
-      if (kind === 'image' || (kind === 'file' && (AUDIO_EXT_RE.test(value) || VIDEO_EXT_RE.test(value)))) {
-        preview.set({
-          path: value,
-          title: basename(value),
-          replace: { refText, occurrence, kind: kind === 'image' ? 'image' : 'file' },
-          ...(kind === 'image' ? { copyRef: { text: refText, label: basename(value) } } : {})
-        })
-        return
-      }
-      if (kind === 'file' || kind === 'folder') void pickReplacement(kind, value, refText, occurrence)
-    }
-
     // ---- audio transcription (D10): Hermes' own STT through the plugin backend ----
     interface SttStatus { kind?: string; provider?: string | null; needs_download?: boolean; model?: string | null; download_mb?: number | null; language?: string | null }
     /** First use of a cloud provider, a model download or an unknown setup asks once (stored per setup). */
@@ -1006,26 +903,21 @@ export default {
       const data = event.clipboardData
       if (!data || !isComposerTarget(event.target)) return
       const sessionId = pinnedAddress()
-      const editor = document.activeElement
       const html = data.getData('text/html') || ''
       const plain = data.getData('text/plain') || ''
       const fileItems = Array.from(data.items || []).filter(item => item.kind === 'file')
       const imageItems = fileItems.filter(item => item.type.startsWith('image/'))
 
-      // Text at the caret when the composer still has focus, else appended (and said so). Chip
-      // text typed at the caret is re-set through the SDK so it hydrates into chips (D6).
-      const placeNow = async (text: string, appendedMessage: string) => {
+      // Markers go in through the SDK only (review 11-10). It appends after what was typed; the SDK
+      // has no insert-at-caret option yet. Chip text hydrates into chips (D6). When no composer
+      // takes the text, the attachment is there but its marker is not: say so.
+      const placeNow = async (text: string) => {
         if (!stillActive(sessionId)) return
-        if (insertAtCaret(editor, text)) {
-          if (text.includes('@')) await host.composer.setDraft(sessionId, await readDraft(sessionId))
-        } else {
-          await host.composer.insertText(sessionId, text, { mode: 'inline' })
-          notify('info', appendedMessage)
-        }
+        if (!(await host.composer.insertText(sessionId, text, { mode: 'inline' }))) notify('warning', t('markerFailed'))
         void refreshDraft()
       }
-      const place = (text: string, appendedMessage: string) => {
-        ctx.setTimeout(() => void placeNow(text, appendedMessage), 0)
+      const place = (text: string) => {
+        ctx.setTimeout(() => void placeNow(text), 0)
       }
       // Names are read now: DataTransfer items detach once this handler returns.
       const names = fileItems.map(item => item.getAsFile()?.name || '').filter(Boolean)
@@ -1042,17 +934,15 @@ export default {
             const shots = imageItems.map((_item, i) => screenshotChip(first + i))
             imageFiles.forEach((file, i) => {
               const key = shotKey(sessionId, first + i)
-              screenshotPreviews.delete(key)
               screenshotDigests.delete(key)
               void savePreview(file).then(saved => {
-                if (saved?.path) screenshotPreviews.set(key, saved.path)
                 if (saved?.sha256) screenshotDigests.set(key, saved.sha256)
               })
             })
             const restEntries = (await pasteboardEntries(names)).slice(imageItems.length)
             const rest = chipsFor(restEntries)
             if (shots.length + rest.length > 1) await placeList(sessionId, [...shots, ...rest])
-            else await placeNow(shots[0], t('shotAppended'))
+            else await placeNow(shots[0])
             offerTranscription(sessionId, restEntries)
           })()
         }, 0)
@@ -1084,13 +974,13 @@ export default {
             return
           }
           if (chips.length > 1) await placeList(sessionId, chips)
-          else place(text, t('fileAppended'))
+          else place(text)
           offerTranscription(sessionId, entries)
         })()
         return
       }
 
-      // A copied chip reference (the preview label, 11-07) arrives as plain text: the core pastes it as
+      // A copied chip reference (a chip copied out of the composer) arrives as plain text: the core pastes it as
       // words, so put the draft back through setDraft, which turns references into chips.
       if (!html && hasRefChips(plain)) {
         ctx.setTimeout(() => {
@@ -1147,8 +1037,7 @@ export default {
       }
     }
 
-    ctx.addEventListener(document, 'click', onChipClick)
-    // Chips the plugin handles on click show a pointer (dogfood 11-07); Desktop gives them none.
+    // The plugin's own classes only (busy dots, its preview); no rule targets Desktop's markup (review 11-10).
     if (typeof document.createElement === 'function' && document.head) {
       const style = document.createElement('style')
       style.textContent = PLUGIN_CSS
@@ -1432,71 +1321,6 @@ export default {
       })
     }
 
-    const copyRef = async (ref: { text: string; label: string }) => {
-      try {
-        await writeClipboardText(ref.text)
-        notify('info', t('copiedRef', ref.label))
-      } catch {
-        notify('warning', t('copyFailed'))
-      }
-    }
-
-    function PreviewDialog() {
-      const p = useValue(preview)
-      if (!p) return null
-      const close = () => preview.set(null)
-      const replace = p.replace
-      return jsx(Dialog, {
-        open: true,
-        onOpenChange: (open: boolean) => { if (!open) close() },
-        children: jsxs(DialogContent, {
-          className: 'max-w-3xl',
-          // No focus on open: the title is the copy button, and focusing it showed a ring and the hover look.
-          onOpenAutoFocus: (event: Event) => event.preventDefault(),
-          children: [
-            // The title copies the chip reference (11-07): no second label; the hint is a hover bubble.
-            jsx(DialogTitle, {
-              children: p.copyRef
-                ? jsx(Tip, {
-                    label: t('clickToCopyRef'),
-                    children: jsx('button', {
-                      type: 'button',
-                      'data-copy-ref': p.copyRef.text,
-                      className: 'rp-copy-title',
-                      style: { cursor: 'pointer' },
-                      onClick: () => void copyRef(p.copyRef!),
-                      children: p.title
-                    })
-                  })
-                : p.title
-            }),
-            jsx('div', {
-              // Audio/video start by themselves and resume where this file was paused (dogfood 11-07).
-              ref: isPlayable(p.path) ? (node: Element | null) => (node ? watchMedia(node, el => attachPlayback(el, p.path, positions)) : undefined) : undefined,
-              children: jsx(MessageTextContent, { text: `MEDIA:\`${p.path}\`` })
-            }),
-            jsxs('div', {
-              className: 'flex items-center gap-2 pt-2',
-              children: [
-                jsx(Button, { type: 'button', size: 'xs', variant: 'text', onClick: () => void ctx.os.revealPath(p.path), children: t('revealInFinder') }),
-                AUDIO_EXT_RE.test(p.path)
-                  ? jsx(Button, { type: 'button', size: 'xs', variant: 'secondary', onClick: () => { close(); void transcribePaths(pinnedAddress(), [p.path]) }, children: t('transcribe') })
-                  : null,
-                replace
-                  ? jsx(Button, { type: 'button',
-                      size: 'xs',
-                      variant: 'secondary',
-                      onClick: () => { close(); void pickReplacement(replace.kind, p.path, replace.refText, replace.occurrence) },
-                      children: t('replace')
-                    })
-                  : null
-              ]
-            })
-          ]
-        })
-      })
-    }
-
     function AudioPanel() {
       const h = useValue(audioHint)
       const c = useValue(consent)
@@ -1545,7 +1369,6 @@ export default {
 
     ctx.register({ id: 'hint', area: COMPOSER_AREAS.underside, render: () => jsx(Underside, {}) })
     ctx.register({ id: 'audio', area: COMPOSER_AREAS.underside, render: () => jsx(AudioPanel, {}) })
-    ctx.register({ id: 'preview', area: COMPOSER_AREAS.underside, render: () => jsx(PreviewDialog, {}) })
     ctx.register({ id: 'split', area: COMPOSER_AREAS.underside, render: () => jsx(SplitDialog, {}) })
     ctx.register({ id: 'tip', area: COMPOSER_AREAS.underside, render: () => jsx(BackendTip, {}) })
     ctx.setTimeout(() => void checkBackend(), 0)

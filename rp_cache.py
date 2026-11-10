@@ -849,8 +849,10 @@ def _store_preview(data: bytes, mime: str, cache_dir: Optional[str], now: Option
 
 
 # ---- dogfood D10: audio transcription through Hermes' own STT ----
-# Uses tools.transcription_tools (Hermes' STT dispatcher). Its provider/config helpers are
-# private, so every call is wrapped: any failure reports "unknown" instead of raising.
+# Transcribes with the public ``tools.transcription_tools.transcribe_audio`` and reads the ``stt``
+# section of Hermes' config through the public ``hermes_cli.config.load_config`` (review 11-10: no
+# private STT helpers). Only an explicit ``stt.provider`` is classified; without one Hermes
+# auto-detects, so the status is "unknown" and the desktop half asks before the first use.
 
 AUDIO_EXTS = (".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".oga", ".opus", ".aif", ".aiff", ".caf", ".amr", ".webm")
 MAX_TRANSCRIBE_BYTES = 200 * 1024 * 1024
@@ -877,21 +879,76 @@ def _hf_cached(repo: str) -> bool:
     return (hub / f"models--{repo.replace('/', '--')}").is_dir()
 
 
-def stt_status(model=None, *, module=None) -> dict:
+def _stt_config() -> dict:
+    """The ``stt`` section of Hermes' config, through its public loader; ``{}`` when unavailable."""
+    from hermes_cli.config import load_config  # Hermes' own config loader; present when running inside Hermes
+    cfg = load_config().get("stt")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _stt_language(provider: str, cfg: dict) -> str | None:
+    """Same order Hermes documents: ``stt.<provider>.language`` > ``stt.language`` > env > auto."""
+    section = cfg.get(provider) if isinstance(cfg.get(provider), dict) else {}
+    for value in (section.get("language"), cfg.get("language"), os.environ.get("HERMES_LOCAL_STT_LANGUAGE")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _faster_whisper_installed() -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec("faster_whisper") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _stt_enabled(cfg: dict) -> bool:
+    """Hermes' public ``is_stt_enabled`` when importable; the same truthiness rule otherwise."""
+    try:
+        from tools.transcription_tools import is_stt_enabled
+        return bool(is_stt_enabled(cfg))
+    except Exception:  # noqa: BLE001 - outside Hermes (tests): mirror its rule
+        value = cfg.get("enabled", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in ("", "0", "false", "no", "off", "disabled")
+        return bool(value)
+
+
+def _stt_provider(cfg: dict) -> str | None:
+    """``none`` when STT is off, else the provider Hermes would pick when that can be told from
+    public facts: an explicit ``stt.provider``, or (none set) a local backend, which Hermes'
+    auto-detection tries first. ``None``: Hermes would look further (cloud keys), so unknown."""
+    if not _stt_enabled(cfg):
+        return "none"
+    provider = cfg.get("provider")
+    if isinstance(provider, str) and provider.strip():
+        provider = provider.strip().lower()
+        return "openai" if provider == "nous" else provider
+    if _faster_whisper_installed():
+        return "local"
+    if os.environ.get("HERMES_LOCAL_STT_COMMAND", "").strip():
+        return "local_command"
+    return None
+
+
+def stt_status(model=None, *, config=None) -> dict:
     """What transcribing will do: ``{"kind": local|cloud|command|none|unknown, "provider",
     "needs_download", "model", "download_mb", "language"}``. ``model`` is the plugin setting; it only
-    applies to Hermes' local STT."""
+    applies to Hermes' local STT. ``config``: the ``stt`` section (tests); read from Hermes otherwise."""
+    unknown = {"kind": "unknown", "provider": None, "needs_download": False, "model": None, "download_mb": None, "language": None}
     try:
-        stt = module or _stt_module()
-        cfg = stt._load_stt_config()
-        provider = stt._get_provider(cfg)
-        language = stt._resolve_stt_language(provider, cfg) if provider not in ("none", "") else None
+        cfg = _stt_config() if config is None else config
+        provider = _stt_provider(cfg)
     except Exception:
-        return {"kind": "unknown", "provider": None, "needs_download": False, "model": None, "download_mb": None, "language": None}
-    if provider in ("none", "", None):
-        return {"kind": "none", "provider": None, "needs_download": False, "model": None, "download_mb": None, "language": None}
+        return unknown
+    if provider == "none":
+        return {**unknown, "kind": "none"}
+    if provider is None:
+        return {**unknown, "language": _stt_language("", cfg)}
+    language = _stt_language(provider, cfg)
     if provider == "local":
-        model = _local_model(model) or str(((cfg.get("local") or {}) if isinstance(cfg, dict) else {}).get("model") or "base")
+        model = _local_model(model) or str(((cfg.get("local") or {}) if isinstance(cfg.get("local"), dict) else {}).get("model") or "base")
         needs = not _hf_cached(_LOCAL_MODEL_REPOS.get(model, f"Systran/faster-whisper-{model}"))
         return {"kind": "local", "provider": provider, "needs_download": needs, "model": model,
                 "download_mb": _LOCAL_MODEL_SIZES_MB.get(model) if needs else None, "language": language}
@@ -899,7 +956,7 @@ def stt_status(model=None, *, module=None) -> dict:
     return {"kind": kind, "provider": provider, "needs_download": False, "model": None, "download_mb": None, "language": language}
 
 
-def transcribe(path: str, model=None, *, module=None) -> dict:
+def transcribe(path: str, model=None, *, module=None, config=None) -> dict:
     """Transcribe one local audio file with Hermes' STT. ``{"transcript", "error", "provider"}``;
     error codes ``unsupported_type`` / ``not_found`` / ``too_large`` / ``failed: <reason>``.
     ``model`` (plugin setting) overrides the local model; a cloud provider keeps its own."""
@@ -917,7 +974,7 @@ def transcribe(path: str, model=None, *, module=None) -> dict:
         chosen = _local_model(model)
         if chosen:
             try:
-                local = stt._get_provider(stt._load_stt_config()) == "local"
+                local = _stt_provider(_stt_config() if config is None else config) == "local"
             except Exception:  # noqa: BLE001 - unknown setup: leave the model to Hermes
                 local = False
             chosen = chosen if local else None

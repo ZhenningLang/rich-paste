@@ -40,7 +40,7 @@ router = APIRouter()
 
 # Bumped whenever a route or the middleware changes. The desktop half compares it with its own
 # BACKEND_API to tell "the gateway still runs an older backend" apart from other failures.
-API_VERSION = 11
+API_VERSION = 12
 
 
 @router.get("/version")

@@ -22,17 +22,15 @@ async function loadPlugin() {
   return import(url)
 }
 
+const execCommands: string[] = []
 ;(globalThis as Record<string, unknown>).DOMParser = class { parseFromString(html: string) { return domino.createDocument(html) } }
 ;(globalThis as Record<string, unknown>).document = Object.assign(new EventTarget(), {
   activeElement: null as unknown,
   visibilityState: 'visible',
-  // Stand-in for the browser editing command: inserts at a caret offset in the mock draft.
-  execCommand(command: string, _ui: boolean, text: string) {
-    const caret = (globalThis as any).__caret
-    if (command !== 'insertText' || typeof caret !== 'number') return false
-    const m = (globalThis as any).__rpMock.composer
-    m.draft = m.draft.slice(0, caret) + text + m.draft.slice(caret)
-    return true
+  // Records any use of the browser editing command; the plugin must never call it (review 11-10).
+  execCommand(command: string) {
+    execCommands.push(command)
+    return false
   }
 })
 const doc = (globalThis as any).document
@@ -317,20 +315,19 @@ test('review 11-08 (B2): 撤销 puts the pasted text back and keeps what was typ
   mock.composer.draft = ''
 })
 
-test('screenshot paste: marker typed at the caret when the composer has focus (A:S3)', async () => {
+test('screenshot paste: the marker goes in through the SDK, never by editing the editor (review 11-10)', async () => {
   const { ctx, listeners } = makeCtx({ results: [] })
   plugin.register(ctx)
   mock.calls.length = 0
   mock.composer.draft = '第一段\n第二段'
   doc.activeElement = editor
-  ;(globalThis as any).__caret = 3   // right after 第一段
   paste(listeners, { 'text/plain': '' }, [{ kind: 'file', type: 'image/png' }])
   await tick(20)
-  assert.equal(mock.composer.draft, '第一段@image:`截图 1`\n第二段')
-  assert.equal(callsOf('insertText').length, 0)
-  assert.equal(callsOf('notify').length, 0)
+  const inserted = callsOf('insertText')
+  assert.equal(inserted.length, 1)
+  assert.deepEqual(inserted[0].args.slice(1), ['@image:`截图 1`', { mode: 'inline' }])
+  assert.equal(execCommands.length, 0, 'document.execCommand is never used')
   doc.activeElement = null
-  ;(globalThis as any).__caret = undefined
 })
 
 test('two screenshots at once become a list paragraph; N follows existing placeholders', async () => {
@@ -656,7 +653,7 @@ test('dogfood D7: copying chips and pasting them back restores the chips (Deskto
   assert.equal(regs.hint.render(), null, 'no 转为 Markdown hint for copied chips')
 })
 
-test('one screenshot without a focused composer is appended and says so', async () => {
+test('one screenshot without a focused composer is appended through the SDK too', async () => {
   const { ctx, listeners } = makeCtx({ results: [] })
   plugin.register(ctx)
   mock.calls.length = 0
@@ -664,88 +661,33 @@ test('one screenshot without a focused composer is appended and says so', async 
   paste(listeners, { 'text/plain': '' }, [{ kind: 'file', type: 'image/png' }])
   await tick(20)
   assert.equal(callsOf('insertText')[0].args[1], '@image:`截图 1`')
-  assert.equal(callsOf('notify')[0].args[0].message, '截图记号加在了末尾')
 })
 
-// ---- dogfood D9: chip clicks ----
-
-/** A fake composer editor holding chips, enough for closest()/querySelectorAll(). */
-function fakeEditor(chips: { kind: string; refText: string; id: string }[]) {
-  const editorEl: any = { getAttribute: (k: string) => (k === 'role' ? 'textbox' : null) }
-  const els = chips.map(c => {
-    const el: any = {
-      getAttribute: (k: string) => ({ 'data-ref-kind': c.kind, 'data-ref-text': c.refText, 'data-ref-id': c.id } as any)[k] ?? null,
-      closest: (sel: string) => (sel.includes('data-ref-kind') ? el : sel.includes('textbox') ? editorEl : null)
+test('review 11-10: no document click listener, and the plugin CSS targets only its own classes', () => {
+  const appended: any[] = []
+  doc.head = { append: (el: any) => { appended.push(el); el.remove = () => appended.splice(appended.indexOf(el), 1) } }
+  doc.createElement = (tag: string) => ({ tag, textContent: '' })
+  try {
+    const { ctx, listeners } = makeCtx({})
+    plugin.register(ctx)
+    assert.equal((listeners.click || []).length, 0)
+    const css = appended.map(el => el.textContent).join('\n')
+    assert.doesNotMatch(css, /data-ref-|role="textbox"|data-slot/)
+    // Selectors = the text before each innermost { } block, with blocks peeled from the inside out.
+    let rest = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    const selectors: string[] = []
+    while (/\{[^{}]*\}/.test(rest)) {
+      rest = rest.replace(/([^{}]*)\{[^{}]*\}/g, (_m, sel: string) => { selectors.push(sel); return '' })
     }
-    return el
-  })
-  editorEl.querySelectorAll = () => els
-  return els
-}
-const click = (listeners: any, target: any) => listeners.click.forEach((fn: any) => fn({ target }))
-
-test('dogfood D9: clicking a folder chip opens the folder picker and replaces that chip only', async () => {
-  const { ctx, listeners } = makeCtx({})
-  plugin.register(ctx)
-  mock.calls.length = 0
-  mock.composer.draft = '看 @folder:/Users/me/a 和 @folder:/Users/me/a'
-  const [, second] = fakeEditor([{ kind: 'folder', refText: '@folder:/Users/me/a', id: '/Users/me/a' }, { kind: 'folder', refText: '@folder:/Users/me/a', id: '/Users/me/a' }])
-  click(listeners, second)
-  await tick(10)
-  assert.equal(mock.composer.draft, '看 @folder:/Users/me/a 和 @folder:/Users/me/picked')
-})
-
-test('dogfood D9: clicking a file chip opens the file picker; the new file is attached on send', async () => {
-  const { ctx, regs, listeners } = makeCtx({})
-  plugin.register(ctx)
-  mock.calls.length = 0
-  mock.composer.draft = '看 @file:/Users/me/old.pdf'
-  const [chip] = fakeEditor([{ kind: 'file', refText: '@file:/Users/me/old.pdf', id: '/Users/me/old.pdf' }])
-  click(listeners, chip)
-  await tick(10)
-  assert.equal(mock.composer.draft, '看 @file:`/Users/me/new pick.pdf`')
-  const sent = await regs['attach-markers'].data.handler({ text: mock.composer.draft, attachments: [] })
-  assert.equal(noCount(sent.text), '看 [附件：new pick.pdf]')
-})
-
-test('dogfood D9: image and audio/video chips open the preview; 截图 N previews its saved copy', async () => {
-  const { ctx, regs, listeners } = makeCtx((path: string) => (path === '/save-preview' ? { path: '/c/rich-paste-cache/1/shot.png', error: null } : {}))
-  plugin.register(ctx)
-  const [img, audio] = fakeEditor([
-    { kind: 'image', refText: '@image:/Users/me/b.png', id: '/Users/me/b.png' },
-    { kind: 'file', refText: '@file:/Users/me/voice.m4a', id: '/Users/me/voice.m4a' }])
-  click(listeners, img)
-  let tree = regs.preview.render()
-  assert.ok(find(tree, (n: any) => n.type === 'MessageTextContent' && n.props.text === 'MEDIA:`/Users/me/b.png`'))
-  assert.ok(find(tree, byText('替换…')))
-  find(tree, (n: any) => n.type === 'Dialog').props.onOpenChange(false)
-  assert.equal(regs.preview.render(), null)
-  click(listeners, audio)
-  assert.ok(find(regs.preview.render(), (n: any) => n.props?.text === 'MEDIA:`/Users/me/voice.m4a`'))
-  find(regs.preview.render(), (n: any) => n.type === 'Dialog').props.onOpenChange(false)
-
-  mock.calls.length = 0
-  mock.composer.draft = ''
-  const png = { name: 'image.png', type: 'image/png', size: 4, arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer }
-  listeners.paste.forEach(fn => fn({ target: { isContentEditable: true }, clipboardData: { getData: () => '', items: [{ kind: 'file', type: 'image/png', getAsFile: () => png }] } }))
-  await tick(30)
-  const [shot] = fakeEditor([{ kind: 'image', refText: '@image:`截图 1`', id: '截图 1' }])
-  click(listeners, shot)
-  tree = regs.preview.render()
-  assert.ok(find(tree, (n: any) => n.props?.text === 'MEDIA:`/c/rich-paste-cache/1/shot.png`'))
-  assert.equal(find(tree, byText('替换…')), null, 'a screenshot is bound to its attachment: no replace')
-})
-
-test('dogfood D9: 截图 N without a saved copy says where to look; clicks outside the composer do nothing', async () => {
-  const { ctx, regs, listeners } = makeCtx({})
-  plugin.register(ctx)
-  mock.calls.length = 0
-  const [shot] = fakeEditor([{ kind: 'image', refText: '@image:`截图 7`', id: '截图 7' }])
-  click(listeners, shot)
-  assert.match(callsOf('notify')[0].args[0].message, /缩略图/)
-  click(listeners, { closest: () => null })
-  click(listeners, null)
-  assert.equal(regs.preview.render(), null)
+    for (const sel of selectors) {
+      for (const part of sel.split(',').map(x => x.trim()).filter(Boolean)) {
+        assert.match(part, /^(\.rp-|button\.rp-|@|\d+%)/, part)
+      }
+    }
+  } finally {
+    delete doc.head
+    delete doc.createElement
+  }
 })
 
 // ---- dogfood D10: audio transcription ----
@@ -875,18 +817,6 @@ test('dogfood D10: a cached local model transcribes without a dialog; no STT / e
   assert.equal(mock.composer.draft, '@file:`/Users/me/voice memo.m4a`')
 })
 
-test('dogfood D10: non-audio pastes get no 转写 offer; the audio preview has a 转写 button', async () => {
-  const { ctx, regs, listeners } = makeCtx(sttBackend({ kind: 'local' }, {}, ['/Users/me/a.pdf']).fn)
-  plugin.register(ctx)
-  mock.composer.draft = ''
-  paste(listeners, { 'text/plain': '' }, [{ kind: 'file', type: 'application/pdf', name: 'a.pdf' }])
-  await tick(30)
-  assert.equal(regs.audio.render(), null)
-  const [audio] = fakeEditor([{ kind: 'file', refText: '@file:/Users/me/v.mp3', id: '/Users/me/v.mp3' }])
-  click(listeners, audio)
-  assert.ok(find(regs.preview.render(), byText('转写')))
-})
-
 test('dogfood D10: a cloud 402 reads as an account problem', async () => {
   const b = sttBackend({ kind: 'local', provider: 'local', needs_download: false }, { transcript: null, error: 'failed: xAI STT API error (HTTP 402): {"error":"You have run out of credits"}' })
   const { ctx, regs, listeners } = makeCtx(b.fn)
@@ -897,47 +827,6 @@ test('dogfood D10: a cloud 402 reads as an account problem', async () => {
   find(regs.audio.render(), byText('转写')).props.onClick()
   await tick(20)
   assert.match(callsOf('notify').at(-1).args[0].message, /额度用完了（HTTP 402）/)
-})
-
-test('dogfood 11-07: clickable chips get a pointer cursor; the style goes away with the plugin', () => {
-  const appended: any[] = []
-  const disposers: (() => void)[] = []
-  doc.head = { append: (el: any) => { appended.push(el); el.remove = () => appended.splice(appended.indexOf(el), 1) } }
-  doc.createElement = (tag: string) => ({ tag, textContent: '' })
-  try {
-    const { ctx } = makeCtx({})
-    plugin.register({ ...ctx, onDispose: (fn: () => void) => disposers.push(fn) })
-    assert.equal(appended.length, 1)
-    const css = appended[0].textContent as string
-    for (const kind of ['image', 'file', 'folder']) assert.ok(css.includes(`[role="textbox"] [data-ref-kind="${kind}"][data-ref-text]`), kind)
-    assert.ok(!css.includes('"url"') && !css.includes('"session"'), 'Desktop owns url/session chips')
-    assert.match(css, /cursor: pointer/)
-    disposers.forEach(fn => fn())
-    assert.equal(appended.length, 0)
-  } finally {
-    delete doc.head
-    delete doc.createElement
-  }
-})
-
-test('dogfood 11-07: the audio/video preview starts playing and resumes from the remembered position', () => {
-  const { ctx, regs, listeners, store } = makeCtx({})
-  plugin.register(ctx)
-  store.media_positions = { '/Users/me/voice.m4a': 33 }
-  const [img, audio] = fakeEditor([
-    { kind: 'image', refText: '@image:/Users/me/b.png', id: '/Users/me/b.png' },
-    { kind: 'file', refText: '@file:/Users/me/voice.m4a', id: '/Users/me/voice.m4a' }])
-  click(listeners, img)
-  assert.equal(find(regs.preview.render(), (n: any) => typeof n.props?.ref === 'function'), null, 'images need no player hook')
-  click(listeners, audio)
-  const holder = find(regs.preview.render(), (n: any) => typeof n.props?.ref === 'function')
-  const player = Object.assign(new EventTarget(), { readyState: 1, currentTime: 0, duration: 60, ended: false, plays: 0, play() { this.plays += 1; return Promise.resolve() } })
-  const cleanup = holder.props.ref({ querySelector: () => player })
-  assert.equal(player.currentTime, 33)
-  assert.equal(player.plays, 1)
-  player.currentTime = 40
-  cleanup()
-  assert.equal((store.media_positions as any)['/Users/me/voice.m4a'], 40)
 })
 
 test('dogfood 11-07: a 预览 button for a markdown draft opens the rendered draft only', async () => {
@@ -1357,40 +1246,6 @@ test('dogfood 11-07: without the digest route (old backend) screenshots bind by 
   plugin.register(ctx)
   const out = await regs['attach-markers'].data.handler({ text: '@image:`截图 1`', attachments: [{ id: 'x', kind: 'image', path: '/ci/a.png' }] })
   assert.equal(noCount(out.text), '\u2063[截图 1]\u2063')
-})
-
-test('dogfood 11-07: the 截图 preview shows its reference as a label; clicking copies it', async () => {
-  const { ctx, regs, listeners } = makeCtx((path: string) => (path === '/save-preview' ? { path: '/c/rich-paste-cache/9/shot.png', error: null, sha256: 'h' } : {}))
-  plugin.register(ctx)
-  mock.composer.draft = ''
-  const png = { name: 'image.png', type: 'image/png', size: 4, arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer }
-  listeners.paste.forEach(fn => fn({ target: { isContentEditable: true }, clipboardData: { getData: () => '', items: [{ kind: 'file', type: 'image/png', getAsFile: () => png }] } }))
-  await tick(30)
-  const [shot, img] = fakeEditor([
-    { kind: 'image', refText: '@image:`截图 1`', id: '截图 1' },
-    { kind: 'image', refText: '@image:/Users/me/b.png', id: '/Users/me/b.png' }])
-  click(listeners, shot)
-  const tree = regs.preview.render()
-  const title = find(tree, (n: any) => n.type === 'DialogTitle')
-  let label = find(title, (n: any) => n.props?.['data-copy-ref'] === '@image:`截图 1`')
-  assert.ok(label, 'the title itself copies the reference')
-  let prevented = false
-  find(tree, (n: any) => n.type === 'DialogContent').props.onOpenAutoFocus?.({ preventDefault: () => { prevented = true } })
-  assert.ok(prevented, 'opening does not focus the title (no focus ring or hover look on open)')
-  assert.equal(label.props.type, 'button')
-  assert.equal(label.props.children, '截图 1', 'no separate @ label: the title text is the button')
-  assert.equal(label.props.style.cursor, 'pointer')
-  assert.match(find(title, (n: any) => n.type === 'Tip').props.label, /点击复制/, 'the hint is a hover bubble')
-  assert.equal(find(tree, byText('点击复制，粘到文字中间就是这张图')), null, 'no hint line left on the dialog')
-  assert.equal(find(tree, (n: any) => n.props?.['data-copy-ref'] && n.props.children !== '截图 1'), null, 'only one copy control')
-  mock.calls.length = 0
-  await label.props.onClick()
-  assert.deepEqual(callsOf('writeClipboardText')[0].args, ['@image:`截图 1`'])
-  assert.ok(callsOf('notify').some(c => /已复制/.test(c.args[0].message)))
-  find(regs.preview.render(), (n: any) => n.type === 'Dialog').props.onOpenChange(false)
-  click(listeners, img)
-  label = find(regs.preview.render(), (n: any) => n.props?.['data-copy-ref'] === '@image:/Users/me/b.png')
-  assert.ok(label, 'file images get the label too')
 })
 
 test('dogfood 11-07: a copied chip reference pasted as plain text turns back into a chip', async () => {

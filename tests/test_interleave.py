@@ -442,11 +442,40 @@ def test_b_s1_anthropic_tool_loop_still_rewrites_the_user_turn():
     assert new["messages"][-1] == request["messages"][-1], "tool result untouched"
 
 
-def test_b_s1_mixed_tool_result_and_text_user_message_is_the_target():
+def test_b_s1_earlier_turn_is_rewritten_and_a_newer_text_turn_is_left_alone():
+    """Review 11-10 (prompt cache): every user turn with markers is interleaved, not only the last."""
     request = AnthropicMessages.request(hermes_text(f"![a]({P1})", [P1]), [AnthropicMessages.image("img1")])
-    request["messages"].append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "x"},
-                                                            {"type": "text", "text": "and this"}]})
-    assert interleave.rewrite_request(request) is None, "a newer user turn with text is the target (no images there)"
+    later = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "x"},
+                                         {"type": "text", "text": "and this"}]}
+    request["messages"].append(later)
+    new = interleave.rewrite_request(request)
+    assert new is not None
+    assert kinds(AnthropicMessages, new["messages"][-2]["content"]) == ["text", "img1"]
+    assert new["messages"][-1] == later, "the newer turn has no images: untouched"
+
+
+# ---- review 11-10 (teknium1): stable request prefix across turns ----
+
+def test_review_every_marked_user_turn_is_interleaved_and_the_prefix_is_stable():
+    """Turn 2 sends turn 1 again in Hermes's shape. Both go out interleaved, and turn 1 reads
+    exactly as it did when it was the newest message, so the provider prompt cache keeps hitting."""
+    turn1 = OpenAIChat.request(hermes_text(f"一 ![a]({P1}) 二", [P1]), [OpenAIChat.image("img1")])
+    first = interleave.rewrite_request(turn1)
+    assert first is not None
+    turn2 = OpenAIChat.request(hermes_text(f"三 ![b]({P2}) 四", [P2]), [OpenAIChat.image("img2")])
+    request = dict(turn1)
+    request["messages"] = [*turn1["messages"], {"role": "assistant", "content": "ok"}, turn2["messages"][-1]]
+    second = interleave.rewrite_request(request)
+    assert second is not None
+    assert second["messages"][:len(first["messages"])] == first["messages"], "same prefix as the turn before"
+    assert kinds(OpenAIChat, second["messages"][-1]["content"]) == ["text", "img2", "text"]
+
+
+def test_review_rewrite_is_idempotent():
+    request = OpenAIChat.request(hermes_text(f"一 ![a]({P1}) 二", [P1]), [OpenAIChat.image("img1")])
+    once = interleave.rewrite_request(request)
+    assert once is not None
+    assert interleave.rewrite_request(once) is None, "an interleaved request is left as it is"
 
 
 # ---- review B / security F9: paths are compared as strings, the file system is never asked ----
@@ -565,3 +594,20 @@ def test_labels_inside_appended_context_are_not_bindings():
 def test_text_mode_count_mismatch_changes_nothing():
     body = f"## 标题\n{S}[截图 1]{S}\n{S}[截图 2]{S}{count_token(3)}"
     assert interleave.rewrite_request(text_request(f"{TUI}\n\n{TUI.replace(U1, U2)}\n\n{body}")) is None
+
+
+def test_review_text_mode_with_cache_marker_reads_the_same_as_the_plain_string():
+    """Hermes adds cache_control by wrapping the newest string message as one text block before the
+    middleware runs; next turn the same message comes back as a plain string. Both must be rewritten
+    identically, or the prefix changes between turns."""
+    plain = OpenAIChat.request("x", [])
+    text = None
+    for candidate in [f"[The user sent an image~ Here's what I can see:\nA receipt.]\n[If you need a closer look, use vision_analyze with image_url: {P1} ~]\n\nAnna paid: \u2063[Screenshot 1]\u2063 thanks"]:
+        text = candidate
+    as_string = {"model": "m", "messages": [{"role": "user", "content": text}]}
+    marked = {"model": "m", "messages": [{"role": "user", "content": [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]}]}
+    a = interleave.rewrite_request(as_string)
+    b = interleave.rewrite_request(marked)
+    assert a is not None and b is not None
+    assert b["messages"][0]["content"][0]["text"] == a["messages"][0]["content"]
+    assert b["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}

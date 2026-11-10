@@ -129,5 +129,5 @@ test('desktop/plugin.js links through loader-style shims of the built export lis
     registerSettingsPage: (p: { id: string }) => { registered.push(`page:${p.id}`); return () => {} },
     addEventListener: noop, setTimeout: noop, setInterval: noop, os: { revealPath: async () => true }
   })
-  assert.deepEqual(registered.sort(), ['attach-markers', 'audio', 'busy-bar', 'hint', 'long-paste', 'md-preview', 'more-images', 'page:settings', 'preview', 'split', 'strip', 'tip'])
+  assert.deepEqual(registered.sort(), ['attach-markers', 'audio', 'busy-bar', 'hint', 'long-paste', 'md-preview', 'more-images', 'page:settings', 'split', 'strip', 'tip'])
 })

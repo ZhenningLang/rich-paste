@@ -34,20 +34,20 @@ middleware).
   × removes one. Avatars and icons (96 px or smaller) are skipped when the page has real images.
   SVG is rasterised to PNG.
 - **Screenshots keep their place.** Pasting a screenshot attaches it as usual and adds a
-  "Screenshot N" block at the caret (Desktop's own `@image:` block, so it is selected, moved and
-  deleted as one piece). The sent message reads `[Screenshot 1]` at that spot.
+  "Screenshot N" block right after what you have typed (Desktop's own `@image:` block, so it is
+  selected, moved and deleted as one piece). The sent message reads `[Screenshot 1]` at that spot.
 - **Finder files and folders, several at once.** Pasted as Desktop's own file, folder and image
   blocks; files are sent as file attachments, folders as an `@folder:` reference, images interleave.
 - **TIFF, HEIC, BMP and AVIF are sent as PNG** (Raycast's clipboard history gives TIFF, which shows
   as a broken image in the chat).
-- **Click a block** to preview it (zoom, play audio/video, *Show in Finder*, *Replace…*).
 - **Audio transcription.** Paste an audio file and click *Transcribe*: Hermes's own speech-to-text
   writes `> Transcript: …` under the block. The first time a model has to be downloaded or audio
   has to go to a cloud service, you are asked first.
 - **Preview** shows how a Markdown draft will look once sent.
 - **Interleaving.** Right before the request goes to the model, each image block is moved after its
-  label. Only the outgoing request changes, never the session history; anything unexpected passes
-  the request through untouched. It also works in Hermes's text mode (models judged unable to see
+  label, in every user message of the request (so earlier turns go out the same way each time and
+  the provider's prompt cache keeps working). Only the outgoing request changes, never the session
+  history; anything unexpected passes the request through untouched. It also works in Hermes's text mode (models judged unable to see
   images), moving each image description next to its label.
 
 The interface is in English, and in Chinese when Desktop's language is Chinese (Traditional Chinese gets the Simplified strings).
@@ -116,16 +116,20 @@ The plugin never changes your Hermes configuration.
   read (its length and first 200 characters, up to 4 MB) to find which saved paste a conversion
   replaces. Audio you choose to transcribe
   is passed to Hermes's speech-to-text (local or cloud, per your Hermes `stt` settings).
-- **Hermes internals used:** transcription calls Hermes's `tools.transcription_tools` (including its
-  `_get_provider`); if that changes, transcription reports "status unknown" and does nothing.
-  Clicking a block and restoring a copied block read the `data-ref-*` attributes of Desktop's
-  composer reference chips; if Desktop changes them, those two features do nothing.
+- **Hermes internals used:** transcription calls the public `transcribe_audio` of Hermes's
+  `tools.transcription_tools` and reads the `stt` settings through `hermes_cli.config.load_config`;
+  if either changes, transcription reports "status unknown" and does nothing. The desktop half
+  writes into the composer only through the SDK (`host.composer`), never by editing its DOM, and
+  its CSS styles only the plugin's own elements. Restoring a copied block reads the `data-ref-*`
+  attributes of the copied HTML on the clipboard; if Desktop changes them, that feature does nothing.
 - **Pasted text is not a request:** `@file:`, `@url:`, `@diff` written inside a pasted page get an
   invisible U+2060 after the `@`, so Hermes does not expand them (read a local file, fetch a URL).
   Images in a page that point at local paths (`file:`, `/Users/…`) are never read or attached.
 
 ## Known limits
 
+- A pasted screenshot's block is added at the end of the draft: the plugin SDK can append text but
+  not insert it at the caret. Paste right where you are typing, or move the block afterwards.
 - Tested on macOS only. Finder file paths come from the macOS clipboard; elsewhere, drag the file
   into the composer instead.
 - The sent label is `[Screenshot 1]` between two invisible U+2063 characters, and the text ends with

@@ -1,5 +1,5 @@
 name: rich-paste
-version: "0.2.0"
+version: "0.2.1"
 description: >-
   Rich paste for Hermes Desktop: web HTML becomes Markdown with headings, links
   and images; pasted and downloaded images are sent to the model at the place

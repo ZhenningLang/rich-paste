@@ -1,4 +1,4 @@
-"""Interleave pasted images back into the text of the last user message.
+"""Interleave pasted images back into the text of each user message.
 
 Hermes builds every user turn as ``[one text block (all text + one
 "[Image attached at: <path>]" line per image), image 1, image 2, ...]``
@@ -80,16 +80,6 @@ def _is_tool_result_only(content: Any) -> bool:
             and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content))
 
 
-def _find_last_user(items: list) -> Optional[int]:
-    """Index of the last user message the person wrote: tool-result-only user messages
-    (Anthropic tool loop) are skipped so the same turn keeps its interleaving."""
-    for index in range(len(items) - 1, -1, -1):
-        item = items[index]
-        if isinstance(item, dict) and item.get("role") == "user" and not _is_tool_result_only(item.get("content")):
-            return index
-    return None
-
-
 def _split_hints(text: str) -> tuple[str, list[str]]:
     """Remove ``[Image attached at: <path>]`` lines; return (rest, paths in order)."""
     kept: list[str] = []
@@ -160,7 +150,7 @@ def _shape_name(key: str, image_type: str) -> str:
 
 
 def rewrite_request(request: Any) -> Optional[dict]:
-    """Return a new request with the last user message interleaved, or ``None``.
+    """Return a new request with every user message interleaved, or ``None``.
 
     ``None`` means "no change": no recognisable shape, no image markers, a hint
     count that does not match the image blocks, or no marker matching an image.
@@ -171,29 +161,58 @@ def rewrite_request(request: Any) -> Optional[dict]:
 
 
 def _rewrite(request: Any) -> Optional[tuple[dict, int, str]]:
-    """(new request, images placed, shape) or ``None``. List content (native image
-    blocks) and string content (text mode, F7) are both handled."""
+    """(new request, images placed, shape) or ``None``. Every user message the person wrote is
+    rewritten, not only the last (review 11-10): Hermes resends earlier turns in its own shape, so
+    rewriting only the newest one would change the request prefix every turn and miss the
+    provider's prompt cache. The rewrite depends only on each message's own content, so the same
+    history always goes out the same way (history is stored as it was before the middleware). List content
+    (native image blocks) and string content (text mode, F7) are both handled."""
     if not isinstance(request, dict):
         return None
     key = next((k for k in ("messages", "input") if isinstance(request.get(k), list)), None)
     if key is None:
         return None
-    items = request[key]
-    user_index = _find_last_user(items)
-    if user_index is None:
+    items = list(request[key])
+    total, shape, changed = 0, "", False
+    for index, item in enumerate(items):
+        if not (isinstance(item, dict) and item.get("role") == "user") or _is_tool_result_only(item.get("content")):
+            continue
+        result = _rewrite_content(item.get("content"), key)
+        if result is None:
+            continue
+        new_content, count, kind = result
+        items[index] = {**item, "content": new_content}
+        total += count
+        shape = shape or kind
+        changed = True
+    if not changed:
         return None
-    message = items[user_index]
-    content = message.get("content")
+    new_request = dict(request)
+    new_request[key] = items
+    return new_request, total, shape
+
+
+def _rewrite_content(content: Any, key: str) -> Optional[tuple[Any, int, str]]:
+    """(new content, images placed, shape) for one user message, or ``None`` to leave it."""
     if isinstance(content, str):
         rewritten = _rewrite_text_mode(content)
         if rewritten is None:
             return None
-        return _replace_content(request, key, user_index, rewritten[0]), rewritten[1], "text"
+        return rewritten[0], rewritten[1], "text"
     if not isinstance(content, list):
         return None
 
     text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") in TEXT_TYPES]
     image_blocks = [b for b in content if isinstance(b, dict) and b.get("type") in IMAGE_TYPES]
+    if len(content) == 1 and len(text_blocks) == 1 and isinstance(text_blocks[0].get("text"), str):
+        # Text mode with a prompt-cache marker (review 11-10): Hermes wraps a string message as one
+        # text block carrying ``cache_control`` before the middleware runs. Rewrite its text the same
+        # way as the plain string, keeping the block's other keys, so the turn reads the same with or
+        # without the marker.
+        rewritten = _rewrite_text_mode(text_blocks[0]["text"])
+        if rewritten is None:
+            return None
+        return [{**text_blocks[0], "text": rewritten[0]}], rewritten[1], "text"
     if len(text_blocks) != 1 or not image_blocks:
         return None
     if len(text_blocks) + len(image_blocks) != len(content):
@@ -238,15 +257,7 @@ def _rewrite(request: Any) -> Optional[tuple[dict, int, str]]:
     if extra and last_text >= 0:
         new_content[last_text].update(extra)
 
-    return _replace_content(request, key, user_index, new_content), len(used), _shape_name(key, image_blocks[0].get("type"))
-
-
-def _replace_content(request: dict, key: str, user_index: int, content: Any) -> dict:
-    items = list(request[key])
-    items[user_index] = {**items[user_index], "content": content}
-    new_request = dict(request)
-    new_request[key] = items
-    return new_request
+    return new_content, len(used), _shape_name(key, image_blocks[0].get("type"))
 
 
 def _is_follow_up(line: str) -> bool:

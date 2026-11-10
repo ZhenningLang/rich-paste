@@ -577,17 +577,25 @@ class _FakeSTT:
 
 def test_d10_stt_status_local_needs_download(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path))
-    out = rp_cache.stt_status(module=_FakeSTT("local"))
+    out = rp_cache.stt_status(config={"provider": "local", "language": "en"})
     assert out == {"kind": "local", "provider": "local", "needs_download": True, "model": "base", "download_mb": 150, "language": "en"}
     (tmp_path / "hub" / "models--Systran--faster-whisper-base").mkdir(parents=True)
-    assert rp_cache.stt_status(module=_FakeSTT("local"))["needs_download"] is False
+    assert rp_cache.stt_status(config={"provider": "local", "language": "en"})["needs_download"] is False
 
 
 def test_d10_stt_status_cloud_none_unknown():
-    assert rp_cache.stt_status(module=_FakeSTT("xai"))["kind"] == "cloud"
-    assert rp_cache.stt_status(module=_FakeSTT("local_command"))["kind"] == "command"
-    assert rp_cache.stt_status(module=_FakeSTT("none"))["kind"] == "none"
-    assert rp_cache.stt_status(module=_FakeSTT(raises="provider"))["kind"] == "unknown"
+    assert rp_cache.stt_status(config={"provider": "xai", "language": "en"})["kind"] == "cloud"
+    assert rp_cache.stt_status(config={"provider": "local_command", "language": "en"})["kind"] == "command"
+    assert rp_cache.stt_status(config={"enabled": False})["kind"] == "none"
+    monkeypatch_free = rp_cache._faster_whisper_installed
+    rp_cache._faster_whisper_installed = lambda: False
+    try:
+        assert rp_cache.stt_status(config={})["kind"] == "unknown", "no provider and no local backend: Hermes looks at cloud keys"
+        rp_cache._faster_whisper_installed = lambda: True
+        assert rp_cache.stt_status(config={})["kind"] == "local", "auto-detection tries a local backend first"
+    finally:
+        rp_cache._faster_whisper_installed = monkeypatch_free
+    assert rp_cache.stt_status(config={"provider": 3})["kind"] == "unknown"
 
 
 def test_d10_transcribe(tmp_path):
@@ -772,25 +780,25 @@ def test_stt_model_choice_reaches_local_only(tmp_path):
     audio.write_bytes(b"x")
     ok = {"success": True, "transcript": "你好", "provider": "local"}
     local = _FakeSTT("local", result=ok)
-    rp_cache.transcribe(str(audio), model="small", module=local)
-    rp_cache.transcribe(str(audio), module=local)
-    rp_cache.transcribe(str(audio), model="evil; rm", module=local)
+    rp_cache.transcribe(str(audio), model="small", module=local, config={"provider": "local"})
+    rp_cache.transcribe(str(audio), module=local, config={"provider": "local"})
+    rp_cache.transcribe(str(audio), model="evil; rm", module=local, config={"provider": "local"})
     assert local.models == ["small", None, None]
     cloud = _FakeSTT("xai", result=ok)
-    rp_cache.transcribe(str(audio), model="small", module=cloud)
+    rp_cache.transcribe(str(audio), model="small", module=cloud, config={"provider": "xai"})
     assert cloud.models == [None], "a cloud provider keeps its own model"
 
 
 def test_stt_status_reports_the_chosen_model(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path))
-    out = rp_cache.stt_status(model="small", module=_FakeSTT("local"))
+    out = rp_cache.stt_status(model="small", config={"provider": "local", "language": "en"})
     assert (out["model"], out["needs_download"], out["download_mb"]) == ("small", True, 490)
-    turbo = rp_cache.stt_status(model="turbo", module=_FakeSTT("local"))
+    turbo = rp_cache.stt_status(model="turbo", config={"provider": "local", "language": "en"})
     assert (turbo["model"], turbo["download_mb"]) == ("turbo", 1620)
     (tmp_path / "hub" / "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo").mkdir(parents=True)
-    assert rp_cache.stt_status(model="turbo", module=_FakeSTT("local"))["needs_download"] is False
-    assert rp_cache.stt_status(model="bogus", module=_FakeSTT("local"))["model"] == "base"
-    assert rp_cache.stt_status(model="small", module=_FakeSTT("xai"))["model"] is None
+    assert rp_cache.stt_status(model="turbo", config={"provider": "local", "language": "en"})["needs_download"] is False
+    assert rp_cache.stt_status(model="bogus", config={"provider": "local", "language": "en"})["model"] == "base"
+    assert rp_cache.stt_status(model="small", config={"provider": "xai", "language": "en"})["model"] is None
 
 
 # ---- dogfood 11-10: SVG images (diagrams on blogs) become PNG; models do not take SVG ----
@@ -1326,3 +1334,24 @@ def test_deeply_nested_json_body_is_a_400_not_a_500():
     body = "[" * 100_000 + "]" * 100_000
     r = TestClient(app).post("/fetch-images", content=body, headers={"content-type": "application/json"})
     assert r.status_code == 400, r.text
+
+
+def test_review_1110_stt_uses_no_private_hermes_helpers():
+    """Review 11-10: only the public transcribe_audio and the public config loader are used."""
+    import inspect
+    source = inspect.getsource(rp_cache)
+    for name in ("_load_stt_config", "_get_provider", "_resolve_stt_language"):
+        assert f"stt.{name}" not in source, name
+
+
+def test_review_1110_stt_language_order(monkeypatch):
+    monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+    assert rp_cache.stt_status(config={"provider": "local", "local": {"language": "zh"}, "language": "en"})["language"] == "zh"
+    assert rp_cache.stt_status(config={"provider": "local", "language": "en"})["language"] == "en"
+    monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "fr")
+    assert rp_cache.stt_status(config={"provider": "local", "language": ""})["language"] == "fr"
+
+
+def test_review_1110_stt_disabled_like_hermes():
+    for value in (False, "false", "off", "", "0", "disabled"):
+        assert rp_cache.stt_status(config={"enabled": value, "provider": "local"})["kind"] == "none", value
